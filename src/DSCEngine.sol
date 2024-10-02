@@ -36,6 +36,7 @@ contract DSCEngine {
     ////// Errors //////
     ////////////////////
     error DSCEngine_tokenaddressandpricefeedaddressdoesnotMatch();
+    error DSCEngine_Healthfactorbroken(uint256 brokenhealthfactor);
 
 
     ////////////////////////
@@ -43,6 +44,8 @@ contract DSCEngine {
     ////////////////////////
 
     DSC private immutable i_dsc;
+
+    uint256 private constant MIN_HEALTH_FACTOR=1e18;
 
     address[] private s_collateraltokens;
 
@@ -52,6 +55,8 @@ contract DSCEngine {
     // //modifiers//
     // mapping (address chain => mapping (address token => address pricefed)) private chain_pricefeed;// probable mapping
     mapping (address token => address pricefeed) private s_pricefeed;// stores its price feed address on a particular chain linked to the particular token address
+    mapping (address sender => uint256 dscminted) private s_DSCminted;// stores the amount of DSC minted per user
+    mapping (address user => mapping ( address tokenaddrss => uint256 collateralamount) ) private s_collateralDeposited;
 
 
 
@@ -103,21 +108,54 @@ contract DSCEngine {
     //deposit collateral
 
     /*
-
     */
-    function mintDSC() external {}
-
-    function burnDSC() external {}
-
-    function deposit_collateral() external {}
-
     function deposit_collateral_and_mintDSC() external {}
 
+    /*
+    */
     function redeem_collateral_forDSC() external {}
 
+    /*
+    */
     function redeem_collateral() external {}
-
+    
+    /*
+    */
     function liquidate() external {}
+
+    ////////////////////////
+    // Public Functions ////
+    ////////////////////////
+
+    /*
+    @prams amout- the amount to beminted
+
+    */
+    function mintDSC(uint256 amt_to_be_minted) public {
+        s_DSCminted[msg.sender] +=amt_to_be_minted;
+        revertIfHealthFactorIsBroken(msg.sender);
+    }
+
+    /*
+    */
+   function getcollateralvalueinusd(address token, uint256 amount) public view returns (uint256) {
+
+   }
+
+    /*
+    */
+    function burnDSC() public {}
+
+    /*
+    */
+   function get_account_information() public {}
+
+    /*
+    */
+    function deposit_collateral() external {}
+    
+
+
 
 
     ////////////////////////
@@ -126,12 +164,79 @@ contract DSCEngine {
 
     //redeem collateral
     //burnDSC
-    //get account information
+    
     //health factor
     //get health factor
     //get usd value
     //calculate health factor
     //revert if health factor is broken
+
+    /*
+    @prams user address to check the health factor
+    calls the get information function using the address of the user
+    calls the check health factor function using the amount of collateral and dsc minted 
+    the function returns the health factor  
+    */
+    function _healthfactor( address user) private view returns (uint256) {
+        (uint256 dscminted, uint256 collateralvalue) = _getInformation( user);
+        return _calculatehealthfactor( dscminted, collateralvalue);
+
+    }
+
+    /*
+    @prams- takes the adress 
+    loops through mappings to find dsc minted and collateral value in usd 
+    calls the calculate vollateral value in usd function
+
+    */
+   function _getInformation( address user) private view returns (uint256 dscminted, uint256 toatalcollateralvalueinusd) {
+    dscminted = s_DSCminted[user];
+    toatalcollateralvalueinusd = _getaccountcollateralvalue(user);
+    // does not need return function, can be added for maintaining clean code
+
+
+   }
+   
+   /*
+   @prams user address 
+   loops through accepted collateral tokens, finds the amount of particular token
+    held be a particular use using the doublemapping s_collateral token deposited
+    calls the get token value in usd function using the token address and the amount held 
+   */
+   function _getaccountcollateralvalue(address user) private view returns (uint256){
+    address token;uint256 amount=0; uint256 totalcollateralvalue=0;
+    for (uint256 i=0; i<s_collateraltokens.length;i++){
+        token = s_collateraltokens[i];
+        amount = s_collateralDeposited[user][token];
+        totalcollateralvalue += getcollateralvalueinusd(token,amount);
+        
+
+    }
+
+    return totalcollateralvalue;
+
+
+   }
+
+   /*
+   */
+  function _calculatehealthfactor(uint256 dscminted, uint256 collateralvalue) private view returns (uint256){
+
+  }
+    
+    /*
+    @prams user address to check and revert of health factor is broken
+    utilises a function which gives health factor of the use
+    comapres the returned health factor with a connstant minimum health factor stetup by the developer of contract
+
+    */
+    function revertIfHealthFactorIsBroken(address user) internal view {
+        uint256 healthfactor = _healthfactor(msg.sender);
+        if(healthfactor < MIN_HEALTH_FACTOR){
+            revert DSCEngine_Healthfactorbroken(healthfactor);
+        }
+
+    }
 
 
 
@@ -143,7 +248,6 @@ contract DSCEngine {
     ////////////////////////////////////////////
     
     //calculate health factor
-    //get account informatio9n
     //get usd value
     //get collateral value of the user
     //get collateral balance of the user
