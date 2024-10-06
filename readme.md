@@ -27,9 +27,26 @@
         3. this price is presise so refine it to return the usd value of token
     6. revert if the health factor is broken(private)
         1. check if the health factor is below a certain threshold and returns error if it is true
-    7. deposit collateral(Public)- takes the token address, the amount of collateral to be deposited and the sender address 
+    7. deposit collateral(Private and external both)- takes the token address, the amount of collateral to be deposited and the sender address 
         1. checks if the collateral to be deposired is in the accepted collateral list
         2. changes its state to store the collateral deposited amount to the particular collateral address mapped to particular adress(msg.sender)
+    8. redeem collateral-token collateral address, amount of collateral to be redeemed
+        1. calls the burn function 
+        2. calls the redeem function
+        3. check if the health factor is broken after the transfer- reverts the whole transaction- no dsc burned and no collateral redeemed
+    9. burn function - takes 3 parameters, the amount of DSC to be burned, the dsc to be burned on behalf of
+       and address dsc to be burned from 
+        1. ammends the contract varialbe by subtracting the dsc amount to be burned
+        2. transfers the amount- for now we are taking the dsc back to the contract
+        3. calls the burn function on the orignal DSC contract
+        4. checks the health factor after the burn, if not good the whole transaction is reversed
+        5. an event function can also be called
+    10. redeem function- takes the collateraladdress to be redeemed, the amount to be redeemed
+        the from or on behalf of address and to be deposited address
+        1. ammends the contract variable by subtracting the collateral amount to be transfered
+        2. transfers the amount 
+        3. checks the health factor after the amount is transfered and reverts the transactionn if not true
+        4. an event function is called 
 
 6. modifiers
     1. is allowed token

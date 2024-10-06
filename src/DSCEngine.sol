@@ -30,6 +30,8 @@
 pragma solidity 0.8.19;
 
 import { DSC } from "./DSC.sol";
+import { IERC20 } from "@openzepplin/contracts/token/ERC20/IERC20.sol";
+import { AggregatorV3Interface } from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
 
 contract DSCEngine {
     ////////////////////
@@ -37,6 +39,12 @@ contract DSCEngine {
     ////////////////////
     error DSCEngine_tokenaddressandpricefeedaddressdoesnotMatch();
     error DSCEngine_Healthfactorbroken(uint256 brokenhealthfactor);
+    error DSCEngine_Needsmorethanzero();
+    error DSCEngine_Tokennotallowed();
+    error DSCEngine_CollateralNotDeposited();
+    error DSCEngine_mintFailed();
+    error DSCEngine_burnNotSuccess();
+    error DSCEngine_redeemNotSuccess();
 
 
     ////////////////////////
@@ -51,12 +59,23 @@ contract DSCEngine {
 
     // to decide the types of collaterl tokens accepted, store its address, its price feed address, also its price feed address on a particular test chain
 
+    ////////////////////////
+    // Events ////
+    ////////////////////////
+
+    event Collateral_deposited(address indexed user, address indexed tokenaddress, uint256 indexed amount);
+    event DSC_Burned(address indexed user, uint256 indexed amount);
+    event Collateral_Redeemed(address indexed user, address indexed toknaddress,
+            uint256 amount, address indexed redeemedby );
+
+
+
 
     // //modifiers//
     // mapping (address chain => mapping (address token => address pricefed)) private chain_pricefeed;// probable mapping
     mapping (address token => address pricefeed) private s_pricefeed;// stores its price feed address on a particular chain linked to the particular token address
     mapping (address sender => uint256 dscminted) private s_DSCminted;// stores the amount of DSC minted per user
-    mapping (address user => mapping ( address tokenaddrss => uint256 collateralamount) ) private s_collateralDeposited;
+    mapping (address user => mapping ( address tokenaddress => uint256 collateralamount) ) private s_collateralDeposited;
 
 
 
@@ -67,6 +86,22 @@ contract DSCEngine {
     ////////////////////////
     ///// Modifiers ////////
     ////////////////////////
+
+    modifier moreThanZero(uint256 amount) {
+        if(amount == 0){
+            revert DSCEngine_Needsmorethanzero();
+        }
+        _;
+    }
+
+    modifier isAllowedToken ( address tokenaddress ) {
+        if (s_pricefeed[tokenaddress] == address(0)){
+            revert DSCEngine_Tokennotallowed();
+        }
+        _;
+    }
+
+
 
     //first listing all the external  functions needed
 
@@ -109,16 +144,45 @@ contract DSCEngine {
 
     /*
     */
-    function deposit_collateral_and_mintDSC() external {}
+    function deposit_collateral_and_mintDSC(address tokenCollateralAddress, uint256 deposit_amount, uint256 minted_amount) external {
+        _depositCollateral(tokenCollateralAddress, deposit_amount);
+        _mintDSC(msg.sender, minted_amount);
+    }
 
     /*
     */
-    function redeem_collateral_forDSC() external {}
+    function deposit_collateral(address tokenCollateralAddress, uint256 amount) external {
+        _depositCollateral(tokenCollateralAddress, amount);
+    }
 
     /*
     */
-    function redeem_collateral() external {}
+   function mintDSC(uint256 amount) external {
+    _mintDSC(msg.sender, amount);
+   }
+
+
+
+    /*
+    this function is to be called if the address itself wants to burn its dsc and redeem collateral
+    */
+    function redeem_collateral_forDSC(address tokenCollateralAddress, uint256 amount) external {
+        _burnDSC(amount, msg.sender, msg.sender);
+        _redeemcollateral(tokenCollateralAddress, amount, msg.sender, msg.sender);
+    }
+
+    /* wants to redeem its own collateral
+    */
+    function redeem_collateral(address tokenCollateralAddress, uint256 amount) external {
+        _redeemcollateral(tokenCollateralAddress, amount, msg.sender, msg.sender);
+    }
     
+    /*
+    */
+   function get_account_information(address user ) external view returns (uint256 dscminted, uint256 tootal_collateral_value_in_usd) {
+    return _getInformation(user);
+   }
+
     /*
     */
     function liquidate() external {}
@@ -127,14 +191,7 @@ contract DSCEngine {
     // Public Functions ////
     ////////////////////////
 
-    /*
-    @prams amout- the amount to beminted
-
-    */
-    function mintDSC(uint256 amt_to_be_minted) public {
-        s_DSCminted[msg.sender] +=amt_to_be_minted;
-        revertIfHealthFactorIsBroken(msg.sender);
-    }
+    
 
     /*
     */
@@ -144,16 +201,12 @@ contract DSCEngine {
 
     /*
     */
-    function burnDSC() public {}
+    function burnDSC(uint256 amount, address on_behalf_of) public {
+        _burnDSC(amount, on_behalf_of, msg.sender);
+    }
 
-    /*
-    */
-   function get_account_information() public {}
-
-    /*
-    */
-    function deposit_collateral() external {}
     
+
 
 
 
@@ -170,6 +223,99 @@ contract DSCEngine {
     //get usd value
     //calculate health factor
     //revert if health factor is broken
+
+    /*
+    @prams amout- the amount to beminted
+
+    */
+    function _mintDSC(address user, uint256 amt_to_be_minted) public {
+        s_DSCminted[user] +=amt_to_be_minted;
+        revertIfHealthFactorIsBroken(user);
+        bool success = i_dsc.mint(user, amt_to_be_minted);
+        if(!success){
+            revert DSCEngine_mintFailed();
+        }
+    }
+
+
+    /*
+    @prams - takes address of collateral token to be deposited
+    @prams- amount of that token to be deposited
+    calls the transferfrom function of the provided collateral contract which asks it to transfer the amount of
+    collateral to this contract and gives the success of transfer
+  
+    */
+    function _depositCollateral(
+    address tokenCollateralAddress,
+    uint256 amountCollateral)
+    private
+    moreThanZero(amountCollateral)
+    isAllowedToken(tokenCollateralAddress){
+    s_collateralDeposited[msg.sender][tokenCollateralAddress]+=amountCollateral;
+    emit Collateral_deposited(msg.sender, tokenCollateralAddress, amountCollateral);
+    //event to log the data to blockchain for future query search
+    bool success = IERC20(tokenCollateralAddress).transferFrom(msg.sender, address(this), amountCollateral);
+    if(!success){
+        revert DSCEngine_CollateralNotDeposited();
+    }
+
+    }
+
+    /*
+    @prams- the amount of dsc to be burned
+    @prams- the address on behalf of which dsc is burned, meaning that this address against whom
+    the dsc was minted is getting burned
+    @prams - who is paying dsc for burning, either the orignal address who minted or someoneels
+
+    calls the transfer function for taking in the dsc- takes the dsc to this address
+    calls the burn function on orignal contract
+    */
+    function _redeemcollateral(address tokenCollateralAddress,
+    uint256 amount,
+    address on_behalf_of, address dscfrom)
+    private
+    isAllowedToken(tokenCollateralAddress)
+    moreThanZero(amount) {
+            
+     s_collateralDeposited[on_behalf_of][tokenCollateralAddress] -= amount;
+     emit Collateral_Redeemed(on_behalf_of, tokenCollateralAddress, amount, dscfrom);
+     bool success = IERC20(tokenCollateralAddress).transfer(dscfrom, amount);
+     //we dont use transfer from function here because the transfer function contains the function that takes deposit from the callaer(this contract) and deposits it to the to address
+     if(!success){
+        revert DSCEngine_redeemNotSuccess();
+     }
+
+
+     revertIfHealthFactorIsBroken(on_behalf_of); 
+
+    }
+
+    /*
+    @prams- the amount of dsc to be burned
+    @prams- the address on behalf of which dsc is burned, meaning that this address against whom
+    the dsc was minted is getting burned
+    @prams - who is paying dsc for burning, either the orignal address who minted or someoneels
+
+    calls the transfer function for taking in the dsc- takes the dsc to this address
+    calls the burn function on orignal contract
+    */
+    function _burnDSC(uint256 amount,
+    address on_behalf_of, address dscfrom) 
+    private  
+    moreThanZero(amount) {
+    
+     s_DSCminted[on_behalf_of] -= amount;
+     emit DSC_Burned(on_behalf_of, amount);
+     bool success = i_dsc.transferFrom(dscfrom, address(this), amount);
+     if(!success){
+        revert DSCEngine_burnNotSuccess();
+     }
+
+     i_dsc.burn(amount);
+
+     revertIfHealthFactorIsBroken(on_behalf_of); 
+
+    }
 
     /*
     @prams user address to check the health factor
@@ -231,7 +377,7 @@ contract DSCEngine {
 
     */
     function revertIfHealthFactorIsBroken(address user) internal view {
-        uint256 healthfactor = _healthfactor(msg.sender);
+        uint256 healthfactor = _healthfactor(user);
         if(healthfactor < MIN_HEALTH_FACTOR){
             revert DSCEngine_Healthfactorbroken(healthfactor);
         }
@@ -254,7 +400,8 @@ contract DSCEngine {
     //get token amount in usd
 
 
-    /*to be implemented after determination of its use
+    // to be implemented after determination of its use
+    /*
     function getPrecision() external pure returns (uint256) {
         return PRECISION;
     }
