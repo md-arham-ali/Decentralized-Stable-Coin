@@ -45,31 +45,28 @@ contract DSCEngine {
     error DSCEngine_mintFailed();
     error DSCEngine_burnNotSuccess();
     error DSCEngine_redeemNotSuccess();
+    error DSCEngine_liquidatefailed();
 
 
     ////////////////////////
     // State variables ////
     ////////////////////////
 
+    uint256 private constant ADDITIONAL_PRICEFEED_PRESICION = 1e10;
+    uint256 private constant PRESICION_CORRECTION = 1e18;
+    uint256 private constant LIQUIDATATION_PRESICION = 50;
+    uint256 private constant PRESICSION_CORRECTION_LIQ = 100;
+    uint256 private constant MIN_HEALTH_FACTOR=1e18;
+    uint256 private constant LIQUIDATATION_BONUS = 10;
+    uint256 private constant LIQUIDATION_FINE = 5;
+
     DSC private immutable i_dsc;
 
-    uint256 private constant MIN_HEALTH_FACTOR=1e18;
+    
 
     address[] private s_collateraltokens;
 
     // to decide the types of collaterl tokens accepted, store its address, its price feed address, also its price feed address on a particular test chain
-
-    ////////////////////////
-    // Events ////
-    ////////////////////////
-
-    event Collateral_deposited(address indexed user, address indexed tokenaddress, uint256 indexed amount);
-    event DSC_Burned(address indexed user, uint256 indexed amount);
-    event Collateral_Redeemed(address indexed user, address indexed toknaddress,
-            uint256 amount, address indexed redeemedby );
-
-
-
 
     // //modifiers//
     // mapping (address chain => mapping (address token => address pricefed)) private chain_pricefeed;// probable mapping
@@ -82,6 +79,11 @@ contract DSCEngine {
     ////////////////////////
     /////// Events /////////
     ////////////////////////
+
+    event Collateral_deposited(address indexed user, address indexed tokenaddress, uint256 indexed amount);
+    event DSC_Burned(address indexed user, uint256 indexed amount);
+    event Collateral_Redeemed(address indexed user, address indexed toknaddress,
+            uint256 amount, address indexed redeemedby );
 
     ////////////////////////
     ///// Modifiers ////////
@@ -127,7 +129,8 @@ contract DSCEngine {
 
         
 
-        i_dsc= DSC(DSC_address);
+        i_dsc= DSC(DSC_address);    
+        //this is 
     }
 
     ////////////////////////
@@ -169,12 +172,14 @@ contract DSCEngine {
     function redeem_collateral_forDSC(address tokenCollateralAddress, uint256 amount) external {
         _burnDSC(amount, msg.sender, msg.sender);
         _redeemcollateral(tokenCollateralAddress, amount, msg.sender, msg.sender);
+        revertIfHealthFactorIsBroken(msg.sender);
     }
 
     /* wants to redeem its own collateral
     */
     function redeem_collateral(address tokenCollateralAddress, uint256 amount) external {
         _redeemcollateral(tokenCollateralAddress, amount, msg.sender, msg.sender);
+        revertIfHealthFactorIsBroken(msg.sender);
     }
     
     /*
@@ -184,8 +189,47 @@ contract DSCEngine {
    }
 
     /*
+    @prams- 
     */
-    function liquidate() external {}
+    function liquidate( address collateralused, uint256 debttocover, address onbehalfof) external isAllowedToken(collateralused) {
+        uint256 prevhealthfactor = _healthfactor(onbehalfof);
+
+        if(prevhealthfactor > MIN_HEALTH_FACTOR){
+            revert DSCEngine_liquidatefailed();
+        } 
+
+        uint256 tokenamountdebttocover = _getcollateralvaluefromusd(collateralused, debttocover);
+        // giving $10 bonus as well
+        // 
+
+        uint256 DSCminted = s_DSCminted[onbehalfof];
+        uint256 mindebttocover = _minDSCtocorrectposition(debttocover,DSCminted);
+        
+        if(mindebttocover < tokenamountdebttocover){
+            revert DSCEngine_liquidatefailed();
+        }
+
+        uint256 bonuscollateral = (tokenamountdebttocover * LIQUIDATATION_BONUS)/PRESICSION_CORRECTION_LIQ; 
+        uint256 liquidationfine = (tokenamountdebttocover * LIQUIDATION_FINE)/PRESICSION_CORRECTION_LIQ;
+        // we are imposing a fine for not able to maintain your debt position which is 15%
+        // it will be detucted from the user who minted DSC 
+        // but there is an error here give it a thought later
+        // what if all the debt position is removed
+        // and then what if the user forgets its DSC, we will not be able to use the extra collateral
+         
+        _redeemcollateral(collateralused, tokenamountdebttocover + bonuscollateral, onbehalfof, msg.sender);
+        s_collateralDeposited[onbehalfof][collateralused] -=  liquidationfine;
+        _burnDSC(debttocover,onbehalfof,msg.sender);
+
+        uint256 endinghealthfactor = _healthfactor(onbehalfof);  
+
+        if(endinghealthfactor < prevhealthfactor){
+            revert DSCEngine_liquidatefailed();
+        }
+        revertIfHealthFactorIsBroken(onbehalfof);
+
+
+    }
 
     ////////////////////////
     // Public Functions ////
@@ -194,23 +238,39 @@ contract DSCEngine {
     
 
     /*
+    @prams- getting the token addres whose value in currency is to be obtained
+    @prams- the amount of that token that has been deposited 
+    this calls the aggregatorV3 interface which is used to get the latest pricefeed data
+    the Aggregator contracts various functions like
+    1. decimal
+    2. version
+    3. getRoundData
+    4. latestRoundData
+
+    the round data and latest round data returns 5 cariables
+    1. roundId 
+    2. answer 
+    3.startedAt
+    4. updatedAt
+    5. answered in Round
+    and we require the answer only
+
     */
    function getcollateralvalueinusd(address token, uint256 amount) public view returns (uint256) {
-
+    AggregatorV3Interface pricefeed = AggregatorV3Interface(s_pricefeed[token]);//it is the variable contract that will get us the price feed
+    (,int256 price,,,) = pricefeed.latestRoundData();
+    // but there issue whith placing of decimals in the answer so we wil have to first rectify that
+    // the returned value will be pricevalueincurrency *1e8
+    // and the amount precision is 1e18. also we need the price in precision of 1e18 as well
+    return ((uint256(price) * ADDITIONAL_PRICEFEED_PRESICION) * amount)/PRESICION_CORRECTION;
    }
 
     /*
     */
     function burnDSC(uint256 amount, address on_behalf_of) public {
         _burnDSC(amount, on_behalf_of, msg.sender);
+        revertIfHealthFactorIsBroken(on_behalf_of);
     }
-
-    
-
-
-
-
-
     ////////////////////////
     // Private Functions ///
     ////////////////////////
@@ -220,9 +280,15 @@ contract DSCEngine {
     
     //health factor
     //get health factor
-    //get usd value
     //calculate health factor
     //revert if health factor is broken
+
+    function _getcollateralvaluefromusd (address token, uint256 amount) public view returns (uint256) {
+    AggregatorV3Interface pricefeed = AggregatorV3Interface(s_pricefeed[token]);//it is the variable contract that will get us the price feed
+    (,int256 price,,,) = pricefeed.latestRoundData();
+
+    return ((amount * PRESICION_CORRECTION)/(uint256(price) * ADDITIONAL_PRICEFEED_PRESICION));
+    }
 
     /*
     @prams amout- the amount to beminted
@@ -234,6 +300,7 @@ contract DSCEngine {
         bool success = i_dsc.mint(user, amt_to_be_minted);
         if(!success){
             revert DSCEngine_mintFailed();
+
         }
     }
 
@@ -286,7 +353,7 @@ contract DSCEngine {
      }
 
 
-     revertIfHealthFactorIsBroken(on_behalf_of); 
+    //  revertIfHealthFactorIsBroken(on_behalf_of); 
 
     }
 
@@ -313,7 +380,7 @@ contract DSCEngine {
 
      i_dsc.burn(amount);
 
-     revertIfHealthFactorIsBroken(on_behalf_of); 
+    //  revertIfHealthFactorIsBroken(on_behalf_of); 
 
     }
 
@@ -326,6 +393,7 @@ contract DSCEngine {
     function _healthfactor( address user) private view returns (uint256) {
         (uint256 dscminted, uint256 collateralvalue) = _getInformation( user);
         return _calculatehealthfactor( dscminted, collateralvalue);
+        
 
     }
 
@@ -354,21 +422,38 @@ contract DSCEngine {
     for (uint256 i=0; i<s_collateraltokens.length;i++){
         token = s_collateraltokens[i];
         amount = s_collateralDeposited[user][token];
-        totalcollateralvalue += getcollateralvalueinusd(token,amount);
-        
-
+        if(amount != 0){ totalcollateralvalue += getcollateralvalueinusd(token,amount);
+        }
     }
-
     return totalcollateralvalue;
-
-
    }
+
+   
+
+   
 
    /*
    */
-  function _calculatehealthfactor(uint256 dscminted, uint256 collateralvalue) private view returns (uint256){
+  function _calculatehealthfactor(uint256 dscminted, uint256 collateralvalue) private pure returns (uint256){
+    // dscminted/ collateralvalueinusd
+    // but we need 200% collateralised o 150% 
+    // setting presicison at 200%
+    // solidity does not work with decimals 
+    uint256 thresholdvalue = (collateralvalue * LIQUIDATATION_PRESICION)/PRESICSION_CORRECTION_LIQ;
+    return (thresholdvalue * PRESICION_CORRECTION)/dscminted;
+
+
+
 
   }
+    /* 
+    */
+   function _minDSCtocorrectposition( uint256 collateralvalue, uint256 DSC_minted) internal pure returns (uint256){
+    uint256 y = DSC_minted -(collateralvalue * LIQUIDATATION_PRESICION)/PRESICSION_CORRECTION_LIQ;
+    return y;
+
+   }
+
     
     /*
     @prams user address to check and revert of health factor is broken

@@ -57,7 +57,7 @@ contract DSC is ERC20Burnable, Ownable {
 
     }
 
-    function burn(uint256 amt) public override onlyOwner {
+    function burn(uint256 amt) public view override onlyOwner {
         uint256 balance = balanceOf(msg.sender);
         if(amt <= 0){
             revert DSC_amountmustbenonzero();

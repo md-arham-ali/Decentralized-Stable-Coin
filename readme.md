@@ -47,6 +47,12 @@
         2. transfers the amount 
         3. checks the health factor after the amount is transfered and reverts the transactionn if not true
         4. an event function is called 
+    11. Liquidate function(external)- takes the collateral address used to cover debt, the amount of debt to be covered and the user whose debt is to be covered
+        1. starting health factor
+        2. get the amount of debt to be covered value in usd and add bonus to that
+        3. redeem collateral
+        4. burn dsc
+        5. check ending health factor
 
 6. modifiers
     1. is allowed token
